@@ -1,6 +1,6 @@
 // kern/mm/buddy_pmm.c
 
-#include <pmm.h>
+#include <buddy_pmm.h>
 #include <list.h>
 #include <string.h>
 #include <stdio.h>
@@ -119,56 +119,205 @@ static struct Page *buddy_alloc_pages(size_t n) {
 // 释放页面
 static void buddy_free_pages(struct Page *base, size_t n) {
     assert(n > 0);
-    uint32_t order = get_order(n);
-    struct Page *p = base;
+    
+    // 修正：从 Page 结构体自身获取真实的阶数，而不是依赖n
+    // 因为 alloc_pages(3) 会分配一个阶数为2的块，但调用者可能用 free_pages(p, 3) 来释放
+    uint32_t order = base->property;
 
-    // 恢复页面的初始状态
+    // 修正：在函数开头，只为当前被释放的块增加空闲页计数
+    nr_free += (1 << order);
+
+    struct Page *p = base;
+    // 将释放的页面标记为非保留和非分配状态
     for (; p != base + (1 << order); p++) {
-        assert(!PageReserved(p) && !PageProperty(p));
+        assert(!PageReserved(p));
+        // 注意不能断言 !PageProperty(p)
+        // 因为 base 页面（p=base时）的 PageProperty 可能是1，代表它是一个已分配块的头
         p->flags = 0;
         set_page_ref(p, 0);
     }
     
-    // 开始尝试合并
-    while (order < MAX_ORDER -1) {
-        // 计算伙伴页的索引
+    // 开始循环合并
+    while (order < MAX_ORDER - 1) {
         uintptr_t page_idx = page2ppn(base);
         uintptr_t buddy_idx = page_idx ^ (1 << order);
         struct Page *buddy = pa2page(buddy_idx * PGSIZE);
         
-        // 检查伙伴是否空闲且阶数相同
+        // 检查伙伴是否是空闲块的头，并且阶数相同
         if (!PageProperty(buddy) || buddy->property != order) {
-            break; // 伙伴不满足合并条件
+            break; // 不满足合并条件，跳出循环
         }
 
-        // 从空闲链表中移除伙伴
+        // 从空闲链表中移除伙伴，准备合并
         list_del(&(buddy->page_link));
         free_area[order].nr_free--;
-        ClearPageProperty(buddy);
+        ClearPageProperty(buddy); // 伙伴不再是空闲块头
 
-        // 合并后，新的大块起始于地址较小的那个页
+        // 更新基地址，确保 base 指向地址较小的那个页
         if (buddy < base) {
             base = buddy;
         }
         
-        order++; // 阶数加一，继续向上尝试合并
+        // 阶数加一，进入下一轮合并尝试
+        order++;
     }
     
-    // 将最终的块加入空闲链表
+    // 将最终的块（可能已合并）加入到正确的空闲链表中
     base->property = order;
-    SetPageProperty(base);
+    SetPageProperty(base); // 标记它是一个新的空闲块头
     list_add(&(free_area[order].free_list), &(base->page_link));
     free_area[order].nr_free++;
-    nr_free += (1 << order);
 }
 
 static size_t buddy_nr_free_pages(void) {
     return nr_free;
 }
 
-// 检查函数，用于测试
+
+// 查找当前系统中最大的可分配块的阶数
+static int find_max_order(void) {
+    for (int i = MAX_ORDER - 1; i >= 0; i--) {
+        if (!list_empty(&(free_area[i].free_list))) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void show_buddy_info(const char *label) {
+    cprintf("   --- %s ---\n", label);
+    for (int i = 0; i < MAX_ORDER; i++) {
+        if (free_area[i].nr_free > 0) {
+            cprintf("     阶数 %2d (大小 %4d): %d 个空闲块\n", i, 1 << i, free_area[i].nr_free);
+        }
+    }
+    cprintf("   --------------------------------\n");
+}
+
 static void buddy_check(void) {
-    //待添加
+    cprintf("=== 开始伙伴系统测试 ===\n");
+    size_t initial_free = buddy_nr_free_pages();
+    cprintf("初始空闲页数: %d\n\n", initial_free);
+
+    
+    // 1. 测试简单请求和释放操作
+    
+    cprintf("1. 简单的分配和释放操作\n");
+    show_buddy_info("初始状态");
+    struct Page *p1 = alloc_pages(16);
+    show_buddy_info("分配 16 页后");
+    assert(p1 != NULL);
+    assert(buddy_nr_free_pages() == initial_free - 16);
+    cprintf("   - 已分配 16 页。通过。\n");
+
+    free_pages(p1, 16);
+    show_buddy_info("释放 16 页后");
+    assert(buddy_nr_free_pages() == initial_free);
+    cprintf("   - 已释放 16 页。通过。\n");
+
+
+    
+    // 2. 测试复杂请求和释放操作 (碎片化与合并)
+    
+    cprintf("2. 复杂的分配和释放操作\n");
+    show_buddy_info("初始状态");
+    struct Page *p2 = alloc_pages(3);  // 消耗4页
+    show_buddy_info("分配 3 页后");
+    struct Page *p3 = alloc_pages(10); // 消耗16页
+    show_buddy_info("分配 10 页后");
+    assert(p2 != NULL && p3 != NULL);
+    assert(buddy_nr_free_pages() == initial_free - 4 - 16);
+    cprintf("   - 已分配 3 页块 (实际消耗 4 页) 和 10 页块 (实际消耗 16 页)。通过。\n");
+    
+    // 逆序释放,测试合并逻辑
+    free_pages(p3, 10);
+    show_buddy_info("释放 10 页后");
+    assert(buddy_nr_free_pages() == initial_free - 4);
+    cprintf("   - 已释放 10 页块。通过。\n");
+    
+    free_pages(p2, 3);
+    show_buddy_info("释放 3 页后");
+    assert(buddy_nr_free_pages() == initial_free);
+    cprintf("   - 已释放 3 页块。通过。\n");
+
+
+    
+    // 3. 测试请求和释放最小单元操作 (可视化分割与合并)
+
+    cprintf("3. 最小单元操作 \n");
+    show_buddy_info("初始状态");
+
+    // 分配一个最小单元
+    struct Page *p_min = alloc_pages(1);
+    assert(p_min != NULL);
+    cprintf("   - 已分配 1 页。通过。\n");
+    show_buddy_info("分配 1 页后");
+
+    // 释放这个最小单元
+    free_pages(p_min, 1);
+    cprintf("   - 已释放 1 页。通过。\n");
+    show_buddy_info("释放 1 页后");
+    
+    // 检查内存是否完全恢复
+    assert(buddy_nr_free_pages() == initial_free);
+    cprintf("   - 测试通过: 最小单元操作正确。\n\n");
+
+
+    
+    // 4. 测试请求和释放最大单元操作
+    
+    cprintf("4. 最大单元操作\n");
+    int max_order = find_max_order();
+    show_buddy_info("初始状态");
+    int max_block_size = (1 << max_order);
+    // 分配这个最大的块
+    struct Page *p_max = alloc_pages(max_block_size);
+    show_buddy_info("分配最大块后");
+    assert(p_max != NULL);
+    cprintf("   - 已分配最大块。通过。\n");
+    assert(buddy_nr_free_pages() == initial_free - max_block_size);
+
+    // 释放这个最大的块
+    free_pages(p_max, max_block_size);
+    show_buddy_info("释放最大块后");
+    assert(buddy_nr_free_pages() == initial_free);
+    cprintf("   - 已释放最大块。通过。\n");
+    
+    // 再次查找最大块,阶数应该和之前一样
+    assert(find_max_order() == max_order);
+    cprintf("   - 验证通过: 最大块再次可用。\n");
+
+    cprintf("5. “穿插打孔”碎片化与合并\n");
+    show_buddy_info("初始状态");
+    const int ALLOC_COUNT = 20;
+    const int ALLOC_SIZE = 4;
+    struct Page *allocated[ALLOC_COUNT];
+
+    for (int i = 0; i < ALLOC_COUNT; i++) {
+        allocated[i] = alloc_pages(ALLOC_SIZE);
+        assert(allocated[i] != NULL);
+    }
+    show_buddy_info("分配 20 个 4 页块后");
+    cprintf("   - 连续分配了 %d 个 %d 页大小的块. OK.\n", ALLOC_COUNT, ALLOC_SIZE);
+    // 释放偶数块，制造孔洞
+    for (int i = 0; i < ALLOC_COUNT; i += 2) {
+        free_pages(allocated[i], ALLOC_SIZE);
+    }
+    show_buddy_info("释放所有偶数块后");
+    cprintf("   - 释放了所有偶数块，制造碎片. OK.\n");
+    assert(buddy_nr_free_pages() == initial_free - (ALLOC_COUNT / 2) * ALLOC_SIZE);
+
+    // 释放奇数块，触发合并
+    for (int i = 1; i < ALLOC_COUNT; i += 2) {
+        free_pages(allocated[i], ALLOC_SIZE);
+    }
+    show_buddy_info("释放所有奇数块后");
+    cprintf("   - 释放了所有奇数块，触发合并. OK.\n");
+
+    assert(buddy_nr_free_pages() == initial_free);
+    cprintf("   - PASS: 碎片化合并测试正确.\n\n");
+
+    cprintf("=== 伙伴系统测试完成 ===\n");
 }
 
 const struct pmm_manager buddy_pmm_manager = {
