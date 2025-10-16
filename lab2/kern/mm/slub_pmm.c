@@ -243,6 +243,14 @@ struct kmem_cache *get_kmem_cache(size_t size) {
     return NULL; // 大小超出范围
 }
 
+struct large_block_header {
+    size_t num_pages;  // 分配的页数
+    uint32_t magic;    // 魔数，用于验证
+};
+
+#define LARGE_BLOCK_MAGIC 0x4C524745  // "LRGE"
+#define LARGE_BLOCK_HEADER_SIZE SLUB_ALIGN_SIZE(sizeof(struct large_block_header))
+
 /* 分配任意大小的内存(类似kmalloc) */
 void *slub_alloc(size_t size) {
     if (size == 0) {
@@ -251,12 +259,22 @@ void *slub_alloc(size_t size) {
     
     if (size > SLUB_MAX_SIZE) {
         // 大于最大对象大小,直接分配页
-        size_t n = ROUNDUP(size, PGSIZE) / PGSIZE;
+        // 需要额外空间存储头部信息
+        size_t total_size = size + LARGE_BLOCK_HEADER_SIZE;
+        size_t n = ROUNDUP(total_size, PGSIZE) / PGSIZE;
         struct Page *page = slub_alloc_pages(n);
         if (page == NULL) {
             return NULL;
         }
-        return page2kva(page);
+        
+        // 在页的开头写入头部信息
+        void *kva = page2kva(page);
+        struct large_block_header *header = (struct large_block_header *)kva;
+        header->num_pages = n;
+        header->magic = LARGE_BLOCK_MAGIC;
+        
+        // 返回头部之后的地址
+        return (void *)((uintptr_t)kva + LARGE_BLOCK_HEADER_SIZE);
     }
     
     struct kmem_cache *cache = get_kmem_cache(size);
@@ -273,20 +291,33 @@ void slub_free(void *objp) {
         return;
     }
     
-    // 获取对象所在的页
-    uintptr_t page_addr = ROUNDDOWN((uintptr_t)objp, PGSIZE);
+    // 检查是否是大内存分配（通过检查头部魔数）
+    // 大内存分配的地址会在页对齐地址之后偏移LARGE_BLOCK_HEADER_SIZE
+    uintptr_t addr = (uintptr_t)objp;
+    uintptr_t page_addr = ROUNDDOWN(addr, PGSIZE);
+    uintptr_t offset = addr - page_addr;
+    
+    // 如果偏移正好是LARGE_BLOCK_HEADER_SIZE，可能是大内存分配
+    if (offset == LARGE_BLOCK_HEADER_SIZE) {
+        struct large_block_header *header = (struct large_block_header *)page_addr;
+        if (header->magic == LARGE_BLOCK_MAGIC) {
+            // 这是一个大内存分配，直接释放页
+            struct Page *page = kva2page((void *)page_addr);
+            slub_free_pages(page, header->num_pages);
+            return;
+        }
+    }
+    
+    // 否则，尝试作为SLUB对象释放
     struct slab *slab = (struct slab *)page_addr;
     
-    // 简单检查:如果页的开头看起来像slab结构,则使用kmem_cache_free
-    // 否则假设是直接页分配
+    // 检查是否是有效的slab
     if (slab->cache != NULL && 
         slab->cache >= &kmem_caches[0] && 
         slab->cache < &kmem_caches[SLUB_CACHE_NUM]) {
         kmem_cache_free(slab->cache, objp);
     } else {
-        // 直接页分配的情况,这里简化处理
-        // 实际应该记录分配的页数
-        cprintf("Warning: slub_free called on direct page allocation\n");
+        cprintf("Warning: slub_free called on unknown allocation at %p\n", objp);
     }
 }
 
@@ -410,6 +441,47 @@ void slub_check(void) {
     }
     slub_free(pi);
     cprintf("  Test 6 passed!\n");
+    
+    // 测试7: 大内存分配回退到伙伴系统
+    cprintf("Test 7: Large allocation fallback to buddy system\n");
+    
+    // 测试边界值: SLUB_MAX_SIZE vs SLUB_MAX_SIZE+1
+    void *p_max_slub = slub_alloc(SLUB_MAX_SIZE);
+    void *p_min_buddy = slub_alloc(SLUB_MAX_SIZE + 1);
+    assert(p_max_slub != NULL && p_min_buddy != NULL);
+    
+    // 验证地址特征
+    uintptr_t offset_slub = (uintptr_t)p_max_slub - ROUNDDOWN((uintptr_t)p_max_slub, PGSIZE);
+    uintptr_t offset_buddy = (uintptr_t)p_min_buddy - ROUNDDOWN((uintptr_t)p_min_buddy, PGSIZE);
+    cprintf("  SLUB_MAX_SIZE: addr=%p, offset=%lu (SLUB)\n", p_max_slub, offset_slub);
+    cprintf("  SLUB_MAX_SIZE+1: addr=%p, offset=%lu (Buddy)\n", p_min_buddy, offset_buddy);
+    assert(offset_buddy == LARGE_BLOCK_HEADER_SIZE);
+    
+    // 测试多页分配和内存读写
+    void *p_large = slub_alloc(PGSIZE * 4);
+    assert(p_large != NULL);
+    cprintf("  Allocated 4 pages at %p\n", p_large);
+    
+    // 写入测试
+    memset(p_large, 0xAA, PGSIZE);
+    assert(((char *)p_large)[0] == (char)0xAA);
+    assert(((char *)p_large)[PGSIZE - 1] == (char)0xAA);
+    
+    // 混合分配测试
+    void *p_small_mix = slub_alloc(64);
+    assert(p_small_mix != NULL);
+    cprintf("  Mixed allocation: small=%p, large=%p\n", p_small_mix, p_large);
+    
+    // 释放测试
+    size_t free_before = slub_nr_free_pages();
+    slub_free(p_max_slub);
+    slub_free(p_min_buddy);
+    slub_free(p_large);
+    slub_free(p_small_mix);
+    size_t free_after = slub_nr_free_pages();
+    cprintf("  Pages recovered: %lu\n", free_after - free_before);
+    
+    cprintf("  Test 7 passed!\n");
     
     cprintf("=== SLUB allocator check passed! ===\n");
 }

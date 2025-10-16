@@ -248,15 +248,17 @@ static void buddy_check(void) {
     show_buddy_info("初始状态");
 
     // 分配一个最小单元
-    struct Page *p_min = alloc_pages(1);
-    assert(p_min != NULL);
-    cprintf("   - 已分配 1 页。通过。\n");
-    show_buddy_info("分配 1 页后");
+    struct Page *p_min1 = alloc_pages(1);
+    struct Page *p_min2 = alloc_pages(1);
+    assert(p_min1 != NULL && p_min2 != NULL);
+    cprintf("   - 已分配两次 1 页。通过。\n");
+    show_buddy_info("分配两次 1 页后");
 
     // 释放这个最小单元
-    free_pages(p_min, 1);
-    cprintf("   - 已释放 1 页。通过。\n");
-    show_buddy_info("释放 1 页后");
+    free_pages(p_min1, 1);
+    free_pages(p_min2, 1);
+    cprintf("   - 已释放两次 1 页。通过。\n");
+    show_buddy_info("释放两次 1 页后");
     
     // 检查内存是否完全恢复
     assert(buddy_nr_free_pages() == initial_free);
