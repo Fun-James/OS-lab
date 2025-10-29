@@ -38,7 +38,8 @@ static void check_alloc_page(void);
 static void init_pmm_manager(void) {
     // pmm_manager = &default_pmm_manager; 
     // pmm_manager = &buddy_pmm_manager;
-    pmm_manager = &slub_pmm_manager;  // 使用SLUB分配器
+    pmm_manager = &best_fit_pmm_manager;
+    // pmm_manager = &slub_pmm_manager;  // 使用SLUB分配器
     cprintf("memory management: %s\n", pmm_manager->name);
     pmm_manager->init();
 }

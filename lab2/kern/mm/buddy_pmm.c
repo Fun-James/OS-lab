@@ -119,49 +119,37 @@ static struct Page *buddy_alloc_pages(size_t n) {
 // 释放页面
 static void buddy_free_pages(struct Page *base, size_t n) {
     assert(n > 0);
-    
-    // 修正：从 Page 结构体自身获取真实的阶数，而不是依赖n
-    // 因为 alloc_pages(3) 会分配一个阶数为2的块，但调用者可能用 free_pages(p, 3) 来释放
+    // 获取阶数
     uint32_t order = base->property;
-
-    // 修正：在函数开头，只为当前被释放的块增加空闲页计数
+    // 当前被释放的块增加空闲页计数
     nr_free += (1 << order);
-
     struct Page *p = base;
     // 将释放的页面标记为非保留和非分配状态
     for (; p != base + (1 << order); p++) {
         assert(!PageReserved(p));
-        // 注意不能断言 !PageProperty(p)
-        // 因为 base 页面（p=base时）的 PageProperty 可能是1，代表它是一个已分配块的头
         p->flags = 0;
         set_page_ref(p, 0);
     }
-    
     // 开始循环合并
     while (order < MAX_ORDER - 1) {
         uintptr_t page_idx = page2ppn(base);
         uintptr_t buddy_idx = page_idx ^ (1 << order);
         struct Page *buddy = pa2page(buddy_idx * PGSIZE);
-        
         // 检查伙伴是否是空闲块的头，并且阶数相同
         if (!PageProperty(buddy) || buddy->property != order) {
             break; // 不满足合并条件，跳出循环
         }
-
         // 从空闲链表中移除伙伴，准备合并
         list_del(&(buddy->page_link));
         free_area[order].nr_free--;
         ClearPageProperty(buddy); // 伙伴不再是空闲块头
-
         // 更新基地址，确保 base 指向地址较小的那个页
         if (buddy < base) {
             base = buddy;
         }
-        
         // 阶数加一，进入下一轮合并尝试
         order++;
     }
-    
     // 将最终的块（可能已合并）加入到正确的空闲链表中
     base->property = order;
     SetPageProperty(base); // 标记它是一个新的空闲块头

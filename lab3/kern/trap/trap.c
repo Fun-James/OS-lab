@@ -8,8 +8,11 @@
 #include <riscv.h>
 #include <stdio.h>
 #include <trap.h>
+#include <sbi.h> // 👈 增加的头文件，用于 sbi_shutdown()
 
 #define TICK_NUM 100
+
+static int print_count = 0; // 👈 增加的静态变量，用于记录打印次数
 
 static void print_ticks() {
     cprintf("%d ticks\n", TICK_NUM);
@@ -24,23 +27,23 @@ static void print_ticks() {
 void idt_init(void) {
     /* LAB3 YOUR CODE : STEP 2 */
     /* (1) Where are the entry addrs of each Interrupt Service Routine (ISR)?
-     *     All ISR's entry addrs are stored in __vectors. where is uintptr_t
+     * All ISR's entry addrs are stored in __vectors. where is uintptr_t
      * __vectors[] ?
-     *     __vectors[] is in kern/trap/vector.S which is produced by
+     * __vectors[] is in kern/trap/vector.S which is produced by
      * tools/vector.c
-     *     (try "make" command in lab3, then you will find vector.S in kern/trap
+     * (try "make" command in lab3, then you will find vector.S in kern/trap
      * DIR)
-     *     You can use  "extern uintptr_t __vectors[];" to define this extern
+     * You can use  "extern uintptr_t __vectors[];" to define this extern
      * variable which will be used later.
      * (2) Now you should setup the entries of ISR in Interrupt Description
      * Table (IDT).
-     *     Can you see idt[256] in this file? Yes, it's IDT! you can use SETGATE
+     * Can you see idt[256] in this file? Yes, it's IDT! you can use SETGATE
      * macro to setup each item of IDT
      * (3) After setup the contents of IDT, you will let CPU know where is the
      * IDT by using 'lidt' instruction.
-     *     You don't know the meaning of this instruction? just google it! and
+     * You don't know the meaning of this instruction? just google it! and
      * check the libs/x86.h to know more.
-     *     Notice: the argument of lidt is idt_pd. try to find it!
+     * Notice: the argument of lidt is idt_pd. try to find it!
      */
 
     extern void __alltraps(void);
@@ -130,6 +133,32 @@ void interrupt_handler(struct trapframe *tf) {
              *(3)当计数器加到100的时候，我们会输出一个`100ticks`表示我们触发了100次时钟中断，同时打印次数（num）加一
             * (4)判断打印次数，当打印次数为10时，调用<sbi.h>中的关机函数关机
             */
+
+            // 👇 [LAB3 EXERCISE1] 练习1 的代码
+            
+            // (1) 设置下一次时钟中断
+            clock_set_next_event();
+
+            // (2) 计数器（ticks）加一
+            // (3) 判断是否达到了 TICK_NUM (100)
+            if (++ticks % TICK_NUM == 0) {
+                
+                // 打印 "100 ticks"
+                print_ticks();
+                
+                // (3) 打印次数加一
+                print_count++;
+
+                // (4) 判断打印次数是否达到 10 次
+                if (print_count == 10) {
+                    sbi_shutdown(); // 关机
+                }
+
+                if (ticks >= TICK_NUM * 10) {
+                    ticks = 0;
+                }
+            }
+            // 👆 [LAB3 EXERCISE1] 练习1 的代码结束
             break;
         case IRQ_H_TIMER:
             cprintf("Hypervisor software interrupt\n");
