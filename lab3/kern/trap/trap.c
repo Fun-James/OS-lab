@@ -163,19 +163,29 @@ void exception_handler(struct trapframe *tf) {
             break;
         case CAUSE_ILLEGAL_INSTRUCTION:
              // 非法指令异常处理
-             /* LAB3 CHALLENGE3   YOUR CODE :  */
+             /* LAB3 CHALLENGE3   YOUR CODE : 2313447 */
             /*(1)输出指令异常类型（ Illegal instruction）
              *(2)输出异常指令地址
              *(3)更新 tf->epc寄存器
             */
+            cprintf("Exception type: Illegal instruction\n");
+            cprintf("Illegal instruction caught at 0x%08x\n", tf->epc);
+            // 读取指令判断长度: RISC-V指令最低2位为11表示32位指令，否则为16位压缩指令
+            uint16_t instr = *(uint16_t*)(tf->epc);
+            tf->epc += (instr & 0x3) == 0x3 ? 4 : 2;
             break;
         case CAUSE_BREAKPOINT:
             //断点异常处理
-            /* LAB3 CHALLLENGE3   YOUR CODE :  */
+            /* LAB3 CHALLENGE3   YOUR CODE : 2313447 */
             /*(1)输出指令异常类型（ breakpoint）
              *(2)输出异常指令地址
              *(3)更新 tf->epc寄存器
             */
+            cprintf("Exception type: breakpoint\n");
+            cprintf("ebreak caught at 0x%08x\n", tf->epc);
+            // ebreak可能是压缩指令(2字节)或标准指令(4字节)
+            uint16_t instr_bp = *(uint16_t*)(tf->epc);
+            tf->epc += (instr_bp & 0x3) == 0x3 ? 4 : 2;
             break;
         case CAUSE_MISALIGNED_LOAD:
             break;
