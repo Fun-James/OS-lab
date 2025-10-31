@@ -32,7 +32,7 @@ int kern_init(void) {
 
     idt_init();  // init interrupt descriptor table
 
-    clock_init();   // init clock interrupt
+    
     intr_enable();  // enable irq interrupt
 
     // LAB3 CHALLENGE3: 测试异常处理
@@ -50,7 +50,7 @@ int kern_init(void) {
     
     cprintf("\nException handling test completed!\n\n");
 
-
+    clock_init();   // init clock interrupt
     /* do nothing */
     while (1)
         ;
