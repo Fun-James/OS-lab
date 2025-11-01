@@ -132,15 +132,15 @@
 
 ## 2.1 ucore 中断异常处理流程
 
-1. CPU 硬件响应：当异常发生时，RISC-V CPU 硬件会将当前的程序计数器 `pc` 保存到 `sepc` 寄存器中，在 `scause` 寄存器中记录异常的原因，在 `stval` 寄存器中记录额外信息，将 `pc` 设置为 `stvec` 寄存器指向的地址。
-
-2. 软件保存上下文：`stvec` 指向的就是 ucore 的统一异常入口点，通常是 `__alltraps`。硬件只保存了 `pc`，但 C 语言函数需要使用通用寄存器。为了保证 C 函数（`trap_dispatch`）可以安全运行而不破坏被中断程序的上下文，我们必须在进入 C 代码之前保存所有的通用寄存器。 `SAVE_ALL` 首先在内核栈上分配一个 `struct trapframe` 的空间，然后将 32 个通用寄存器按照 `struct trapframe` 定义的顺序，逐一存储到这个栈帧中。
-
-3. C 代码分发处理：现在`sp` 寄存器指向 `struct trapframe` 的起始地址，执行 `mov a0`，调用 C 语言的 `trap` 函数。trap 函数通过 `tf->scause`的值来判断异常的类型，分发到具体的处理函数。
-
-4. &#x20;软件恢复上下文：调用 `RESTORE_ALL` 宏，从 `sp` 指向的 `trapframe` 中，将所有寄存器（`ra`, `sp`, `t0`...）的值通过 `ld` 指令加载回来。
-
-5. 硬件返回：最后，执行 `sret` 指令，将 `sepc` 寄存器中的值恢复到 `pc`，恢复 `sstatus` 寄存器，恢复到中断前的特权级。
+1. **初始化设置：**内核启动时，`idt_init()` 函数被调用来设置异常处理的入口点。它首先声明了汇编中定义的全局异常入口点 `__alltraps`，然后设置 `stvec` 寄存器：`write_csr(stvec, &__alltraps)`。无论在 S-mode 下发生任何类型的中断或异常，都应该立即跳转到 `__alltraps` 这个地址去执行。
+2. **硬件响应与保存上下文：**一个异常或中断发生时，硬件会自动跳转，CPU 硬件自动保存 `pc` 到 `sepc`，设置 `scause` 等 CSRs，然后强制跳转到 `stvec` 指向的地址，即 `__alltraps`。`__alltraps` 的第一条指令就是执行 `SAVE_ALL` 宏，这个宏执行了上下文保存操作：
+   1. `csrw sscratch, sp` 将当前的栈指针 `sp` 暂存到 `sscratch` 寄存器中。
+   2. `addi sp, sp, -36 * REGBYTES` 在内核栈上为 `trapframe` 分配空间。
+   3. `STORE x0`, `STORE x1`, `STORE x3`... 将 $$x0,x1,x3-x31$$ 这31 个通用寄存器保存到栈帧的相应位置。
+   4. `csrrw s0, sscratch, x0` 将 `sscratch`的值读入 `s0`，并将 `sscratch` 清零。然后 `STORE s0, 2*REGBYTES(sp)` 将原始 `sp`保存到栈帧中 `x2` 对应的位置。
+   5. `csrr` 指令读取 `sstatus`, `sepc`, `sbadaddr`, `scause` 到临时寄存器，然后 `STORE` 指令将其存入`trapfame`。
+3. **C 代码分发处理：**`SAVE_ALL` 执行完毕后，`trapentry.S` 执行 `move a0, sp`，然后 `jal trap`。`trap()` 函数 被调用，接收 `a0` 传来的 `trapframe` 指针，并调用 `trap_dispatch(tf)`。`trap_dispatch()` 函数检查 `tf->cause` 的最高位来区分是中断还是异常。
+4.  **恢复上下文与返回：**`trap()` 函数执行完毕后，返回到 `jal` 的下一条指令 `__trapret` 处。调用 `RESTORE_ALL` 宏，恢复`CSRs`、`GSRs`、`sp`的值。最后执行 `sret`指令。硬件会读取 `sepc` 和 `sstatus`的值，返回到被中断的代码，并恢复到中断前的特权级和中断使能状态。
 
 ## 2.2 `mov a0, sp` 的目的
 
@@ -154,6 +154,16 @@
 
 `kern/trap/trap.h`中有`struct trapframe` 的定义，它规定了所有寄存器的存储顺序和偏移量。
 
+```C
+struct trapframe {
+    struct pushregs gpr;
+    uintptr_t status;
+    uintptr_t epc;
+    uintptr_t badvaddr;
+    uintptr_t cause;
+};
+```
+
 `SAVE_ALL` 宏需要按照 `struct trapframe` 中定义的相同顺序和偏移量来保存寄存器。
 
 ## 2.4 对于任何中断，`__alltraps` 中都需要保存所有寄存器吗？
@@ -163,24 +173,20 @@
 理由：
 
 1. **C 函数调用会覆盖原有的值：**`__alltraps` 的目的是调用一个 C 语言函数（`trap_dispatch`）来处理异常。C 编译器在编译 C 函数时，会认为它可以自由使用所有的调用者保存寄存器。如果 `__alltraps` 不保存这些寄存器，那么 `trap_dispatch`或它调用的任何子函数几乎肯定会覆盖掉被中断程序正在使用的值。
-
 2. **不知道上下文：**`__alltraps` 是一个统一的入口点。它不知道它中断的是哪段代码，也不知道那段代码正在使用哪些寄存器。
-
 3. **保证异常处理的透明性：** 中断/异常处理的核心原则是透明性，即被中断的程序不应该感知到自己被中断过。为了实现这一点，当中断处理返回时，所有寄存器的状态都必须恢复到中断发生前的瞬间。
-
-***
 
 # 三、扩展练习 Challenge2：理解上下文切换机制
 
 ## 3.1 `csrw sscratch, sp` 和 `csrrw s0, sscratch, x0` 的操作与目的
 
-* **操作分析：**
+- **操作分析：**
 
 `csrw sscratch, sp`将 `sp`寄存器的当前值，写入到 `sscratch` 这个 CSR 寄存器中。此时的 `sp` 是 `__alltraps` 刚进入时的栈指针，这个指针指向内核栈的栈顶。
 
-`csrrw s0, sscratch, x0`读取 `sscratch` 的旧值并将其写入 `s0`寄存器，并将 `x0` 寄存器的值写入 `sscratch`。执行完毕后，`s0` 中保存了*原始的 `sp`*，而 `sscratch` 被清零。
+`csrrw s0, sscratch, x0`读取 `sscratch` 的旧值并将其写入 寄存器，并将 `x0` 寄存器的值写入 `sscratch`。执行完毕后，`s0` 中保存了*原始的* *`sp`*，而 `sscratch` 被清零。
 
-* **目的：**
+- **目的：**
 
 `SAVE_ALL` 宏需要保存所有通用寄存器，包括 `sp`。但是，它又必须使用 `sp` 来分配栈帧。
 
@@ -190,17 +196,21 @@
 
 **因为这些 CSR 的用途不同。**
 
-* `sstatus` 和 `sepc`必须恢复：
+- `sstatus` 和 `sepc`必须恢复：
 
 `sstatus`包含了中断前的特权级和中断使能状态。`sepc`则包含了中断发生时被卡住的指令地址，即返回地址。`RESTORE_ALL` 必须把它们加载回来，并写回 CSR。最后的 `sret` 指令会隐式使用这两个寄存器的值，来正确地返回到被中断的程序、恢复其特权级并重新使能中断。
 
 而且，C 语言的 `trap` 函数可能会修改 `trapframe` 中的 `sepc`。因此，`RESTORE_ALL` 必须加载 C 代码修改后的新值。
 
-* `scause` 和 `sbadaddr`只用来读取，无需恢复：
+- `scause` 和 `sbadaddr`只用来读取，无需恢复：
 
 `scause` 由硬件写入，用于告诉 OS 发生了什么。`sbadaddr`/ `stval`由硬件写入，提供了异常的附加信息。`SAVE_ALL` 将它们保存到 `trapframe`，目的是为了把这些信息传递给 C 语言的 `trap` 函数。C 代码会读取 `tf->scause` 和 `tf->sbadaddr` 来判断异常类型并进行相应处理。
 
 它们不需要被恢复它们只在异常发生的那一刻由硬件设置，用于向 OS 传递信息。当 `sret` 返回后，这些 CSR 的旧值是多少并不重要；当下一次异常发生时，硬件会用新值自动覆盖它们。
+
+## 3.3 这样store的意义是什么？
+
+C 语言的 `trap` 函数可能会修改 `trapframe` 中的 `sepc`。因此，`RESTORE_ALL` 必须加载 C 代码修改后的新值。而`scause` 和 `sbadaddr`这两个寄存器对于被中断的程序上下文来说没有意义。它们只在异常发生的那一刻由硬件设置，用于向 OS 传递信息。当 `sret` 返回后，这些 CSR 的旧值是多少并不重要；当*下一次*异常发生时，硬件会用新值自动覆盖它们。
 
 ***
 
