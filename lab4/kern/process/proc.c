@@ -105,6 +105,19 @@ alloc_proc(void)
          *       char name[PROC_NAME_LEN + 1];               // Process name
          */
         
+        proc->state = PROC_UNINIT;      // 设置进程状态为未初始化
+        proc->pid = -1;                 // 未分配 PID，初始化为 -1
+        proc->runs = 0;                 // 运行时间初始化为 0
+        proc->kstack = 0;               // 内核栈地址初始化为 0，后续由 setup_kstack 分配
+        proc->need_resched = 0;         // 不需要调度
+        proc->parent = NULL;            // 父进程为空
+        proc->mm = NULL;                // 内存管理结构为空（内核线程通常没有 mm）
+        memset(&(proc->context), 0, sizeof(struct context)); // 清空上下文
+        proc->tf = NULL;                // 中断帧指针为空
+        proc->pgdir = boot_pgdir_pa;    // 页目录表基址设为内核页目录表（重要：proc_init 检查要求）
+        proc->flags = 0;                // 标志位清零
+        memset(proc->name, 0, PROC_NAME_LEN + 1); // 进程名清空
+        
     }
     return proc;
 }

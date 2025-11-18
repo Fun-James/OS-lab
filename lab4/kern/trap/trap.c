@@ -12,6 +12,8 @@
 
 #define TICK_NUM 100
 
+static int print_count = 0;
+
 static void print_ticks()
 {
     cprintf("%d ticks\n", TICK_NUM);
@@ -111,6 +113,29 @@ void interrupt_handler(struct trapframe *tf)
         // clear_csr(sip, SIP_STIP);
 
         /*LAB3 请补充你在lab3中的代码 */ 
+
+        // (1) 设置下一次时钟中断
+        clock_set_next_event();
+
+        // (2) 计数器（ticks）加一
+        // (3) 判断是否达到了 TICK_NUM (100)
+        if (++ticks % TICK_NUM == 0) {
+            
+            // 打印 "100 ticks"
+            print_ticks();
+            
+            // (3) 打印次数加一
+            print_count++;
+
+            // (4) 判断打印次数是否达到 10 次
+            if (print_count == 10) {
+                sbi_shutdown(); // 关机
+            }
+
+            if (ticks >= TICK_NUM * 10) {
+                ticks = 0;
+            }
+        }
         break;
     case IRQ_H_TIMER:
         cprintf("Hypervisor software interrupt\n");
