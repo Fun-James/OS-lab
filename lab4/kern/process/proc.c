@@ -188,16 +188,37 @@ void proc_run(struct proc_struct *proc)
 {
     if (proc != current)
     {
-        // LAB4:EXERCISE3 YOUR CODE
+        // LAB4:EXERCISE3 2313486
         /*
          * Some Useful MACROs, Functions and DEFINEs, you can use them in below implementation.
          * MACROs or Functions:
          *   local_intr_save():        Disable interrupts
          *   local_intr_restore():     Enable Interrupts
-         *   lsatp():                   Modify the value of satp register
+         *   lsatp():                  Modify the value of satp register
          *   switch_to():              Context switching between two processes
          */
-
+        
+        bool intr_flag;
+        struct proc_struct *prev = current, *next = proc;
+        
+        // 1. 禁用中断（保存当前中断状态）
+        local_intr_save(intr_flag);
+        {
+            // 2. 切换当前进程为要运行的进程
+            current = proc;
+            
+            // 3. 切换页表，以便使用新进程的地址空间
+            // lsatp() 函数接受页目录表的物理地址（右移 RISCV_PGSHIFT 位）
+            lsatp(next->pgdir);
+            
+            // 4. 实现上下文切换
+            // switch_to() 定义在 switch.S 中
+            // 第一个参数：指向当前进程 context 的指针（保存旧进程上下文）
+            // 第二个参数：指向新进程 context 的指针（恢复新进程上下文）
+            switch_to(&(prev->context), &(next->context));
+        }
+        // 5. 允许中断（恢复之前的中断状态）
+        local_intr_restore(intr_flag);
     }
 }
 

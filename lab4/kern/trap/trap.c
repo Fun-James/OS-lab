@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <trap.h>
 #include <vmm.h>
-
+#include <sbi.h>
 #define TICK_NUM 100
 
 static int print_count = 0;
