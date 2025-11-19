@@ -88,7 +88,7 @@ alloc_proc(void)
     struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));
     if (proc != NULL)
     {
-        // LAB4:EXERCISE1 YOUR CODE
+        // LAB4:EXERCISE1 2313851
         /*
          * below fields in proc_struct need to be initialized
          *       enum proc_state state;                      // Process state
@@ -310,7 +310,7 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
         goto fork_out;
     }
     ret = -E_NO_MEM;
-    // LAB4:EXERCISE2 YOUR CODE
+    // LAB4:EXERCISE2 2313447
     /*
      * Some Useful MACROs, Functions and DEFINEs, you can use them in below implementation.
      * MACROs or Functions:
@@ -336,6 +336,44 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
     //    6. call wakeup_proc to make the new child process RUNNABLE
     //    7. set ret vaule using child proc's pid
     
+    // 1. 调用 alloc_proc 分配一个 proc_struct
+    if ((proc = alloc_proc()) == NULL) {
+        goto fork_out;
+    }
+    
+    // 将父进程设置为当前进程
+    proc->parent = current;
+    
+    // 2. 调用 setup_kstack 为子进程分配一个内核栈
+    if (setup_kstack(proc) != 0) {
+        goto bad_fork_cleanup_proc;
+    }
+    
+    // 3. 调用 copy_mm 根据 clone_flag 复制或共享内存管理信息
+    if (copy_mm(clone_flags, proc) != 0) {
+        goto bad_fork_cleanup_kstack;
+    }
+    
+    // 4. 调用 copy_thread 在 proc_struct 中设置 tf 和 context
+    copy_thread(proc, stack, tf);
+    
+    // 5. 将 proc_struct 插入到 hash_list 和 proc_list 中
+    bool intr_flag;
+    local_intr_save(intr_flag);  // 禁用中断，保证原子操作
+    {
+        proc->pid = get_pid();    // 分配唯一的 PID
+        hash_proc(proc);          // 加入哈希表
+        list_add(&proc_list, &(proc->list_link));  // 加入进程链表
+        nr_process++;             // 进程数量加1
+    }
+    local_intr_restore(intr_flag);  // 恢复中断
+    
+    // 6. 调用 wakeup_proc 使新的子进程变为 RUNNABLE 状态
+    wakeup_proc(proc);
+    
+    // 7. 使用子进程的 pid 设置返回值
+    ret = proc->pid;
+
 fork_out:
     return ret;
 
