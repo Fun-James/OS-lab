@@ -382,3 +382,78 @@ bool user_mem_check(struct mm_struct *mm, uintptr_t addr, size_t len, bool write
     }
     return KERN_ACCESS(addr, addr + len);
 }
+
+int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr)
+{
+    int ret = -E_INVAL;
+    struct vma_struct *vma = find_vma(mm, addr);
+
+    pgfault_num++;
+
+    if (vma == NULL || vma->vm_start > addr)
+    {
+        cprintf("not valid addr %x, and  can not find it in vma\n", addr);
+        goto failed;
+    }
+
+    uint32_t perm = PTE_U;
+    if (vma->vm_flags & VM_WRITE)
+    {
+        perm |= PTE_W;
+    }
+    addr = ROUNDDOWN(addr, PGSIZE);
+
+    ret = -E_NO_MEM;
+
+    pte_t *ptep = NULL;
+
+    ptep = get_pte(mm->pgdir, addr, 1);
+    if (ptep == NULL)
+    {
+        cprintf("get_pte in do_pgfault failed\n");
+        goto failed;
+    }
+
+    if (*ptep == 0)
+    {
+        if (pgdir_alloc_page(mm->pgdir, addr, perm) == NULL)
+        {
+            cprintf("pgdir_alloc_page in do_pgfault failed\n");
+            goto failed;
+        }
+    }
+    else
+    {
+        if (*ptep & PTE_V)
+        {
+            if ((error_code & 2) && !(*ptep & PTE_W))
+            {
+                struct Page *page = pte2page(*ptep);
+                if (page_ref(page) > 1)
+                {
+                    struct Page *npage = alloc_page();
+                    if (npage == NULL)
+                        goto failed;
+
+                    memcpy(page2kva(npage), page2kva(page), PGSIZE);
+
+                    if (page_insert(mm->pgdir, npage, addr, perm) != 0)
+                    {
+                        free_page(npage);
+                        goto failed;
+                    }
+                }
+                else
+                {
+                    if (page_insert(mm->pgdir, page, addr, perm) != 0)
+                    {
+                        goto failed;
+                    }
+                }
+            }
+        }
+    }
+    ret = 0;
+failed:
+    return ret;
+}
