@@ -220,8 +220,7 @@ qemu: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 		-machine virt \
 		-nographic \
 		-bios default \
-		-device loader,file=$(UCOREIMG),addr=0x80200000 \
-		-kernel $(UCOREIMG)
+		-device loader,file=$(UCOREIMG),addr=0x80200000
 
 debug: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 	$(V)$(QEMU) \
@@ -230,27 +229,6 @@ debug: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 		-bios default \
 		-device loader,file=$(UCOREIMG),addr=0x80200000\
 		-s -S
-
-# qemu: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
-# # 	$(V)$(QEMU) -kernel $(UCOREIMG) -nographic
-# 	$(V)$(QEMU) \
-# 		-machine virt \
-# 		-nographic \
-# 		-bios default \
-# 		-device loader,file=$(UCOREIMG),addr=0x80200000 \
-# 		-kernel $(UCOREIMG)
-
-
-# debug: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
-# 	$(V)$(QEMU) \
-# 		-machine virt \
-# 		-nographic \
-# 		-bios default \
-# 		-device loader,file=$(UCOREIMG),addr=0x80200000 \
-# 		-kernel $(UCOREIMG) \
-# 		-s -S
-
-
 
 gdb:
 	riscv64-unknown-elf-gdb \
