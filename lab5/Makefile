@@ -188,6 +188,14 @@ $(UCOREIMG): $(kernel)
 
 $(call create_target,ucore.img)
 
+# create swap.img
+SWAPIMG		:= $(call totarget,swap.img)
+
+$(SWAPIMG):
+	$(V)dd if=/dev/zero of=$@ bs=1M count=128
+
+$(call create_target,swap.img)
+
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 $(call finish_all)
@@ -215,19 +223,21 @@ QEMUOPTS = -hda $(UCOREIMG) -drive file=$(SWAPIMG),media=disk,cache=writeback
 
 .PHONY: qemu spike
 qemu: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
-#	$(V)$(QEMU) -kernel $(UCOREIMG) -nographic
+# 	$(V)$(QEMU) -kernel $(UCOREIMG) -nographic
 	$(V)$(QEMU) \
 		-machine virt \
 		-nographic \
 		-bios default \
 		-device loader,file=$(UCOREIMG),addr=0x80200000
 
+
 debug: $(UCOREIMG) $(SWAPIMG) $(SFSIMG)
 	$(V)$(QEMU) \
 		-machine virt \
 		-nographic \
 		-bios default \
-		-device loader,file=$(UCOREIMG),addr=0x80200000\
+		-device loader,file=$(UCOREIMG),addr=0x80200000 \
+		-kernel $(UCOREIMG) \
 		-s -S
 
 gdb:
@@ -245,7 +255,7 @@ MAKEOPTS	:= --quiet --no-print-directory
 run-%: build-%
 	$(V)$(SPIKE) $(UCOREIMG)
 
-run-nox-%: build-%
+run-nox-%: build-% $(SWAPIMG)
 	$(V)$(QEMU) -serial mon:stdio $(QEMUOPTS) -nographic
 
 build-%: touch

@@ -18,7 +18,7 @@
 
 #define TICK_NUM 100
 
-static int print_count = 0; // 👈 增加的静态变量，用于记录打印次数
+//static int print_count = 0; // 👈 增加的静态变量，用于记录打印次数
 
 static void print_ticks()
 {
@@ -123,12 +123,12 @@ void interrupt_handler(struct trapframe *tf)
         // In fact, Call sbi_set_timer will clear STIP, or you can clear it
         // directly.
         // cprintf("Supervisor timer interrupt\n");
-        /* LAB3 EXERCISE1   YOUR CODE :  */
-        /*(1)设置下次时钟中断- clock_set_next_event()
-         *(2)计数器（ticks）加一
-         *(3)当计数器加到100的时候，我们会输出一个`100ticks`表示我们触发了100次时钟中断，同时打印次数（num）加一
-         * (4)判断打印次数，当打印次数为10时，调用<sbi.h>中的关机函数关机
-         */
+        /* LAB5 GRADE   2313447 :  */
+        /* 时间片轮转： 
+        *(1) 设置下一次时钟中断（clock_set_next_event）
+        *(2) ticks 计数器自增
+        *(3) 每 TICK_NUM 次中断（如 100 次），进行判断当前是否有进程正在运行，如果有则标记该进程需要被重新调度（current->need_resched）
+        */
         // (1) 设置下一次时钟中断
         clock_set_next_event();
 
@@ -138,20 +138,16 @@ void interrupt_handler(struct trapframe *tf)
                 
             // 打印 "100 ticks"
             print_ticks();
-                
-            // (3) 打印次数加一
-            print_count++;
-
-            // (4) 判断打印次数是否达到 10 次
-            if (print_count == 10) {
-                sbi_shutdown(); // 关机
-            }
 
             if (ticks >= TICK_NUM * 10) {
                ticks = 0;
             }
-        }
-        current->need_resched = 1; 
+            
+            // (3) 判断当前是否有进程正在运行，如果有则标记该进程需要被重新调度
+            if (current != NULL) {
+                current->need_resched = 1;
+            }
+        } 
         break;
     case IRQ_H_TIMER:
         cprintf("Hypervisor software interrupt\n");
@@ -233,20 +229,22 @@ void exception_handler(struct trapframe *tf)
         break;
     case CAUSE_LOAD_PAGE_FAULT:
         cprintf("Load page fault\n");
-        if ((ret = do_pgfault(current->mm, 0, tf->tval)) != 0)
-        {
-            print_trapframe(tf);
-            print_regs(&tf->gpr);
-            panic("do_pgfault failed.\n");
+        if (1) {
+            uintptr_t addr = tf->tval;
+            if (do_pgfault(current->mm, tf->cause, addr) != 0) {
+                print_trapframe(tf);
+                panic("unhandled page fault");
+            }
         }
         break;
     case CAUSE_STORE_PAGE_FAULT:
         cprintf("Store/AMO page fault\n");
-        if ((ret = do_pgfault(current->mm, 2, tf->tval)) != 0)
-        {
-            print_trapframe(tf);
-            print_regs(&tf->gpr);
-            panic("do_pgfault failed.\n");
+        if (1) {
+            uintptr_t addr = tf->tval;
+            if (do_pgfault(current->mm, tf->cause, addr) != 0) {
+                print_trapframe(tf);
+                panic("unhandled page fault");
+            }
         }
         break;
     default:

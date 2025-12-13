@@ -2,32 +2,39 @@
 #include <ulib.h>
 #include <string.h>
 
-int global_var = 0;
+const int max_iter = 10;
 
 int main(void) {
-    cprintf("COW Test Start\n");
-    int pid = fork();
-    if (pid == 0) {
+    int pid, ret;
+    cprintf("COW test start\n");
+
+    // Allocate a shared variable
+    // In ucore, global variables are in data segment, which is private (COW).
+    static volatile int shared_var = 100;
+
+    if ((pid = fork()) == 0) {
         // Child
-        cprintf("Child: global_var = %d\n", global_var);
-        global_var = 100;
-        cprintf("Child: global_var changed to %d\n", global_var);
+        cprintf("Child: shared_var = %d\n", shared_var);
+        assert(shared_var == 100);
+
+        cprintf("Child: modifying shared_var to 200\n");
+        shared_var = 200;
+        cprintf("Child: shared_var = %d\n", shared_var);
+        assert(shared_var == 200);
+
         exit(0);
     }
-    
+
+    assert(pid > 0);
     // Parent
-    cprintf("Parent: global_var = %d\n", global_var);
-    global_var = 200;
-    cprintf("Parent: global_var changed to %d\n", global_var);
-    
-    waitpid(pid, NULL);
-    cprintf("Parent: child exited.\n");
-    cprintf("Parent: global_var is %d (should be 200)\n", global_var);
-    
-    if (global_var == 200) {
-        cprintf("COW Test Passed!\n");
-    } else {
-        cprintf("COW Test Failed!\n");
+    // Wait for child to modify
+    if (waitpid(pid, &ret) == 0) {
+        cprintf("Parent: child exited.\n");
     }
+
+    cprintf("Parent: shared_var = %d\n", shared_var);
+    assert(shared_var == 100);
+
+    cprintf("COW test passed!\n");
     return 0;
 }
