@@ -239,9 +239,18 @@ int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr)
     // }
 
     uint32_t perm = PTE_U;
+    // Set permissions based on VMA flags (matching load_icode pattern)
+    if (vma->vm_flags & VM_READ)
+    {
+        perm |= PTE_R;
+    }
     if (vma->vm_flags & VM_WRITE)
     {
-        perm |= PTE_W;
+        perm |= (PTE_W | PTE_R);  // Write implies read
+    }
+    if (vma->vm_flags & VM_EXEC)
+    {
+        perm |= PTE_X;
     }
     addr = ROUNDDOWN(addr, PGSIZE);
 
@@ -257,41 +266,59 @@ int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr)
 
     if (*ptep == 0)
     {
+        // Case 1: PTE is empty - demand paging, allocate new page
         if (pgdir_alloc_page(mm->pgdir, addr, perm) == NULL)
         {
             cprintf("pgdir_alloc_page in do_pgfault failed\n");
             goto failed;
         }
     }
-    else
+    else if ((*ptep & PTE_V) && (*ptep & PTE_COW))
     {
-        if (*ptep & PTE_COW)
+        // Case 2: Valid COW page - handle copy-on-write
+        struct Page *page = pte2page(*ptep);
+        if (page_ref(page) == 1)
         {
-            struct Page *page = pte2page(*ptep);
-            if (page_ref(page) == 1)
-            {
-                page_insert(mm->pgdir, page, addr, perm);
-            }
-            else
-            {
-                struct Page *npage = alloc_page();
-                if (npage == NULL)
-                {
-                    goto failed;
-                }
-                memcpy(page2kva(npage), page2kva(page), PGSIZE);
-                if (page_insert(mm->pgdir, npage, addr, perm) != 0)
-                {
-                    free_page(npage);
-                    goto failed;
-                }
-            }
+            // Only this process references the page, just restore write permission
+            // Clear COW flag and set write permission
+            page_insert(mm->pgdir, page, addr, perm);
         }
         else
         {
-            cprintf("do_pgfault failed: unknown error code or state\n");
+            // Multiple processes share this page, need to copy
+            struct Page *npage = alloc_page();
+            if (npage == NULL)
+            {
+                cprintf("alloc_page in do_pgfault COW failed\n");
+                goto failed;
+            }
+            // Copy the page content
+            memcpy(page2kva(npage), page2kva(page), PGSIZE);
+            // Map the new page with write permission
+            // page_insert will decrement the old page's ref count
+            if (page_insert(mm->pgdir, npage, addr, perm) != 0)
+            {
+                free_page(npage);
+                cprintf("page_insert in do_pgfault COW failed\n");
+                goto failed;
+            }
+        }
+    }
+    else if (!(*ptep & PTE_V))
+    {
+        // Case 3: PTE exists but not valid - treat as demand paging
+        if (pgdir_alloc_page(mm->pgdir, addr, perm) == NULL)
+        {
+            cprintf("pgdir_alloc_page in do_pgfault (invalid PTE) failed\n");
             goto failed;
         }
+    }
+    else
+    {
+        // Case 4: Valid page without COW flag but caused a page fault
+        // This could be a permission violation
+        cprintf("do_pgfault failed: valid page fault without COW (pte=0x%x, addr=0x%x)\n", *ptep, addr);
+        goto failed;
     }
     ret = 0;
 failed:
