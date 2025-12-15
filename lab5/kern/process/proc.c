@@ -254,6 +254,11 @@ void proc_run(struct proc_struct *proc)
             // lsatp() 函数接受页目录表的物理地址（右移 RISCV_PGSHIFT 位）
             lsatp(next->pgdir);
             
+            // 3.5 刷新 TLB - 这对 COW 至关重要！
+            // 没有这个刷新，新进程可能使用旧进程的过期 TLB 条目，
+            // 导致写操作绕过 COW 页面错误检测
+            flush_tlb();
+            
             // 4. 实现上下文切换
             // switch_to() 定义在 switch.S 中
             // 第一个参数：指向当前进程 context 的指针（保存旧进程上下文）
@@ -953,7 +958,7 @@ user_main(void *arg)
 #ifdef TEST
     KERNEL_EXECVE2(TEST, TESTSTART, TESTSIZE);
 #else
-    KERNEL_EXECVE(exit);
+    KERNEL_EXECVE(cowtest);  // Default test program
 #endif
     panic("user_main execve failed.\n");
 }

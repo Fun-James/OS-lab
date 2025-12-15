@@ -280,7 +280,6 @@ int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr)
         if (page_ref(page) == 1)
         {
             // Only this process references the page, just restore write permission
-            // Clear COW flag and set write permission
             page_insert(mm->pgdir, page, addr, perm);
         }
         else
@@ -295,7 +294,6 @@ int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr)
             // Copy the page content
             memcpy(page2kva(npage), page2kva(page), PGSIZE);
             // Map the new page with write permission
-            // page_insert will decrement the old page's ref count
             if (page_insert(mm->pgdir, npage, addr, perm) != 0)
             {
                 free_page(npage);
