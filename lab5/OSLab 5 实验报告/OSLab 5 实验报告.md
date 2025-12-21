@@ -517,6 +517,77 @@ Copy-on-Write (COW) 是一种内存管理优化技术。其核心思想是：当
 
 * 如果 ucore 支持多线程，必须确保在步骤 2-6 期间，其他线程不能通过 `madvise` 或其他方式修改该 PTE。Linux 社区的修复方案引入了一个新的标志 `FOLL_COW`，确保在获取页面引用时就强制完成 COW 过程，而不是依赖后续的缺页中断。
 
+### 2.4 COW 机制测试结果
+
+我们创建了一个名为 `cowtest` （`user/cowtest.c`）的测试程序来验证 COW 机制的正确性。该测试程序包含四个部分，分别针对不同的场景进行测试：
+
+1.  **Test 1: Basic COW**: 测试基本的写时复制功能。父进程创建子进程后，子进程修改全局变量和局部变量，验证父进程的数据是否保持不变，从而检查内存隔离性。
+2.  **Test 2: Multiple Pages COW**: 测试跨多个页面的写时复制。使用一个跨越多个页面的大数组，子进程遍历并修改数组内容，验证是否正确触发了多次缺页中断并完成了页面复制。
+3.  **Test 3: Stack COW**: 测试栈内存的写时复制。子进程修改栈上的数组，验证栈空间的 COW 机制是否正常工作，确保函数调用栈的独立性。
+4.  **Test 4: Chain Fork COW**: 测试多级 Fork 下的写时复制。模拟“父进程 -> 子进程 -> 孙子进程”的链式创建，验证每一级进程在修改共享变量时是否都能正确触发 COW，拥有独立的变量副本。
+
+测试结果如下：
+
+```
+kernel_execve: pid = 2, name = "cowtest".
+Breakpoint
+
+========================================
+   COW (Copy-on-Write) Test Suite
+========================================
+
+=== Test 1: Basic COW ===
+Store/AMO page fault
+Store/AMO page fault
+[Child] Before: local=100, global=42
+Store/AMO page fault
+[Child] After: local=200, global=84
+[Parent] After child: local=100, global=42
+Test 1 PASSED!
+
+=== Test 2: Multiple Pages COW ===
+Store/AMO page fault
+Store/AMO page fault
+Store/AMO page fault
+Store/AMO page fault
+[Child] Array modified correctly
+[Parent] Array unchanged
+Test 2 PASSED!
+
+=== Test 3: Stack COW ===
+Store/AMO page fault
+Store/AMO page fault
+[Child] Stack modified: [0]=2000
+[Parent] Stack unchanged: [0]=1000
+Test 3 PASSED!
+
+=== Test 4: Chain Fork COW ===
+Store/AMO page fault
+Store/AMO page fault
+Store/AMO page fault
+Store/AMO page fault
+[Grandchild] chain_var=3
+[Child] chain_var=2
+[Parent] chain_var=1
+Test 4 PASSED!
+
+========================================
+   ALL COW TESTS PASSED!
+========================================
+all user-mode processes have quit.
+init check memory pass.
+kernel panic at kern/process/proc.c:538:
+    initproc exit.
+```
+
+从输出结果可以看出：
+1.  **Test 1 (Basic COW)**: 子进程修改变量时触发了 `Store/AMO page fault`，说明发生了写时复制。子进程修改后的值（local=200, global=84）与父进程的值（local=100, global=42）互不影响，证明了内存隔离性。
+2.  **Test 2 (Multiple Pages COW)**: 跨页面的修改也正确触发了缺页中断并完成了复制，父子进程的大数组互不干扰。
+3.  **Test 3 (Stack COW)**: 栈内存的修改同样触发了 COW，保证了函数调用栈的独立性。
+4.  **Test 4 (Chain Fork COW)**: 在多级 fork 的情况下（父->子->孙），COW 机制依然正常工作，每一级进程都有自己独立的变量副本。
+
+所有测试均通过，证明 COW 机制实现正确。
+
 ***
 
 ## 说明该用户程序是何时被预先加载到内存中的？与我们常用操作系统的加载有何区别，原因是什么？
