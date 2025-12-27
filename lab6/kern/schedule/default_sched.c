@@ -17,7 +17,10 @@
 static void
 RR_init(struct run_queue *rq)
 {
-    // LAB6: YOUR CODE
+    // LAB6: 2313447
+    // 初始化运行队列
+    list_init(&(rq->run_list));  // 初始化运行队列链表为空
+    rq->proc_num = 0;            // 初始化进程数量为 0
 }
 
 /*
@@ -34,7 +37,22 @@ RR_init(struct run_queue *rq)
 static void
 RR_enqueue(struct run_queue *rq, struct proc_struct *proc)
 {
-    // LAB6: YOUR CODE
+    // LAB6: 2313447
+    assert(list_empty(&(proc->run_link)));  // 确保进程不在任何队列中
+    
+    // 将进程插入到运行队列的尾部
+    list_add_before(&(rq->run_list), &(proc->run_link));
+    
+    // 如果进程的时间片已用完或超过最大时间片，重置为最大时间片
+    if (proc->time_slice == 0 || proc->time_slice > rq->max_time_slice) {
+        proc->time_slice = rq->max_time_slice;
+    }
+    
+    // 设置进程所属的运行队列
+    proc->rq = rq;
+    
+    // 更新运行队列中的进程数量
+    rq->proc_num++;
 }
 
 /*
@@ -47,7 +65,14 @@ RR_enqueue(struct run_queue *rq, struct proc_struct *proc)
 static void
 RR_dequeue(struct run_queue *rq, struct proc_struct *proc)
 {
-    // LAB6: YOUR CODE
+    // LAB6: 2313447
+    assert(!list_empty(&(proc->run_link)));  // 确保进程在队列中
+    
+    // 从运行队列中删除该进程
+    list_del_init(&(proc->run_link));
+    
+    // 更新运行队列中的进程数量
+    rq->proc_num--;
 }
 
 /*
@@ -61,7 +86,16 @@ RR_dequeue(struct run_queue *rq, struct proc_struct *proc)
 static struct proc_struct *
 RR_pick_next(struct run_queue *rq)
 {
-    // LAB6: YOUR CODE
+    // LAB6: 2313447
+    // 获取运行队列的第一个元素（队首）
+    list_entry_t *le = list_next(&(rq->run_list));
+    
+    // 如果队列为空，返回 NULL
+    if (le != &(rq->run_list)) {
+        // 使用 le2proc 宏将链表节点转换为进程控制块指针
+        return le2proc(le, run_link);
+    }
+    return NULL;
 }
 
 /*
@@ -74,7 +108,16 @@ RR_pick_next(struct run_queue *rq)
 static void
 RR_proc_tick(struct run_queue *rq, struct proc_struct *proc)
 {
-    // LAB6: YOUR CODE
+    // LAB6: 2313447
+    // 如果进程的时间片大于 0，减少时间片
+    if (proc->time_slice > 0) {
+        proc->time_slice--;
+    }
+    
+    // 如果时间片用完，设置需要调度标志
+    if (proc->time_slice == 0) {
+        proc->need_resched = 1;
+    }
 }
 
 struct sched_class default_sched_class = {
