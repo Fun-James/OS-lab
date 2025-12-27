@@ -265,6 +265,28 @@ void proc_run(struct proc_struct *proc)
         *   lcr3():                   Modify the value of CR3 register
         *   switch_to():              Context switching between two processes
         */
+    bool intr_flag;
+    struct proc_struct *prev = current, *next = proc;
+        
+    // 1. 禁用中断（保存当前中断状态）
+    local_intr_save(intr_flag);
+    {
+        // 2. 切换当前进程为要运行的进程
+        current = proc;
+            
+        // 3. 切换页表，以便使用新进程的地址空间
+        // lsatp() 函数接受页目录表的物理地址（右移 RISCV_PGSHIFT 位）
+        lsatp(next->pgdir);
+            
+        // 4. 实现上下文切换
+        // switch_to() 定义在 switch.S 中
+        // 第一个参数：指向当前进程 context 的指针（保存旧进程上下文）
+        // 第二个参数：指向新进程 context 的指针（恢复新进程上下文）
+        switch_to(&(prev->context), &(next->context));
+    }
+    // 5. 允许中断（恢复之前的中断状态）
+    local_intr_restore(intr_flag);
+
     //LAB8 YOUR CODE : (update LAB4 steps)
       /*
        * below fields(add in LAB6) in proc_struct need to be initialized
@@ -530,6 +552,45 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
     //    5. insert proc_struct into hash_list && proc_list
     //    6. call wakeup_proc to make the new child process RUNNABLE
     //    7. set ret vaule using child proc's pid
+    // 1. 调用 alloc_proc 分配一个 proc_struct
+    if ((proc = alloc_proc()) == NULL) {
+        goto fork_out;
+    }
+    
+    // 将父进程设置为当前进程
+    proc->parent = current;
+    
+    assert(current->wait_state == 0);
+    
+    // 2. 调用 setup_kstack 为子进程分配一个内核栈
+    if (setup_kstack(proc) != 0) {
+        goto bad_fork_cleanup_proc;
+    }
+    
+    // 3. 调用 copy_mm 根据 clone_flag 复制或共享内存管理信息
+    if (copy_mm(clone_flags, proc) != 0) {
+        goto bad_fork_cleanup_kstack;
+    }
+    
+    // 4. 调用 copy_thread 在 proc_struct 中设置 tf 和 context
+    copy_thread(proc, stack, tf);
+    
+    // 5. 将 proc_struct 插入到 hash_list 和 proc_list 中
+    bool intr_flag;
+    local_intr_save(intr_flag);  // 禁用中断，保证原子操作
+    {
+        proc->pid = get_pid();    // 分配唯一的 PID
+        hash_proc(proc);          // 加入哈希表
+        
+        set_links(proc);
+    }
+    local_intr_restore(intr_flag);  // 恢复中断
+    
+    // 6. 调用 wakeup_proc 使新的子进程变为 RUNNABLE 状态
+    wakeup_proc(proc);
+    
+    // 7. 使用子进程的 pid 设置返回值
+    ret = proc->pid;
 
     // LAB5:填写你在lab5中实现的代码 (update LAB4 steps)
     /* Some Functions
@@ -538,6 +599,7 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
      *    update step 1: set child proc's parent to current process, make sure current process's wait_state is 0
      *    update step 5: insert proc_struct into hash_list && proc_list, set the relation links of process
      */
+    
     
     if (copy_files(clone_flags, proc) != 0)
     { // for LAB8
