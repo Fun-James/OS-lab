@@ -15,6 +15,7 @@
 #include <fs.h>
 #include <vfs.h>
 #include <sysfile.h>
+#include <file.h>
 /* ------------- process/thread mechanism design&implementation -------------
 (an simplified Linux process/thread mechanism )
 introduction:
@@ -687,13 +688,18 @@ static int
 load_icode_read(int fd, void *buf, size_t len, off_t offset)
 {
     int ret;
-    if ((ret = sysfile_seek(fd, offset, LSEEK_SET)) != 0)
+    if ((ret = file_seek(fd, offset, LSEEK_SET)) != 0)
     {
         return ret;
     }
-    if ((ret = sysfile_read(fd, buf, len)) != len)
+    size_t copied = len;
+    if ((ret = file_read(fd, buf, len, &copied)) != 0)
     {
-        return (ret < 0) ? ret : -1;
+        return ret;
+    }
+    if (copied != len)
+    {
+        return -1;
     }
     return 0;
 }
@@ -703,32 +709,222 @@ load_icode_read(int fd, void *buf, size_t len, off_t offset)
 static int
 load_icode(int fd, int argc, char **kargv)
 {
-    /* LAB8:EXERCISE2 YOUR CODE  HINT:how to load the file with handler fd  in to process's memory? how to setup argc/argv?
-     * MACROs or Functions:
-     *  mm_create        - create a mm
-     *  setup_pgdir      - setup pgdir in mm
-     *  load_icode_read  - read raw data content of program file
-     *  mm_map           - build new vma
-     *  pgdir_alloc_page - allocate new memory for  TEXT/DATA/BSS/stack parts
-     *  lsatp             - update Page Directory Addr Register -- CR3
-     */
-    //You can Follow the code form LAB5 which you have completed  to complete 
-    /* (1) create a new mm for current process
-     * (2) create a new PDT, and mm->pgdir= kernel virtual addr of PDT
-     * (3) copy TEXT/DATA/BSS parts in binary to memory space of process
-     *    (3.1) read raw data content in file and resolve elfhdr
-     *    (3.2) read raw data content in file and resolve proghdr based on info in elfhdr
-     *    (3.3) call mm_map to build vma related to TEXT/DATA
-     *    (3.4) callpgdir_alloc_page to allocate page for TEXT/DATA, read contents in file
-     *          and copy them into the new allocated pages
-     *    (3.5) callpgdir_alloc_page to allocate pages for BSS, memset zero in these pages
-     * (4) call mm_map to setup user stack, and put parameters into user stack
-     * (5) setup current process's mm, cr3, reset pgidr (using lsatp MARCO)
-     * (6) setup uargc and uargv in user stacks
-     * (7) setup trapframe for user environment
-     * (8) if up steps failed, you should cleanup the env.
-     */
-    
+    if (current->mm != NULL)
+    {
+        panic("load_icode: current->mm must be empty.\n");
+    }
+
+    int ret = -E_NO_MEM;
+    struct mm_struct *mm = NULL;
+
+    // (1) create a new mm for current process
+    if ((mm = mm_create()) == NULL)
+    {
+        goto bad_mm;
+    }
+    // (2) create a new PDT, and mm->pgdir= kernel virtual addr of PDT
+    if ((ret = setup_pgdir(mm)) != 0)
+    {
+        goto bad_pgdir_cleanup_mm;
+    }
+
+    // (3) read ELF header
+    struct elfhdr elf;
+    if ((ret = load_icode_read(fd, &elf, sizeof(elf), 0)) != 0)
+    {
+        goto bad_elf_cleanup_pgdir;
+    }
+    if (elf.e_magic != ELF_MAGIC)
+    {
+        ret = -E_INVAL_ELF;
+        goto bad_elf_cleanup_pgdir;
+    }
+
+    // (4) load each program segment
+    struct Page *page;
+    struct proghdr ph;
+    uint32_t vm_flags, perm;
+    int i;
+    for (i = 0; i < elf.e_phnum; i++)
+    {
+        if ((ret = load_icode_read(fd, &ph, sizeof(ph), elf.e_phoff + i * sizeof(ph))) != 0)
+        {
+            goto bad_cleanup_mmap;
+        }
+        if (ph.p_type != ELF_PT_LOAD)
+        {
+            continue;
+        }
+        if (ph.p_filesz > ph.p_memsz)
+        {
+            ret = -E_INVAL_ELF;
+            goto bad_cleanup_mmap;
+        }
+
+        vm_flags = 0;
+        perm = PTE_U | PTE_V;
+        if (ph.p_flags & ELF_PF_X)
+        {
+            vm_flags |= VM_EXEC;
+        }
+        if (ph.p_flags & ELF_PF_W)
+        {
+            vm_flags |= VM_WRITE;
+        }
+        if (ph.p_flags & ELF_PF_R)
+        {
+            vm_flags |= VM_READ;
+        }
+        // modify the perm bits here for RISC-V
+        if (vm_flags & VM_READ)
+        {
+            perm |= PTE_R;
+        }
+        if (vm_flags & VM_WRITE)
+        {
+            perm |= (PTE_W | PTE_R);
+        }
+        if (vm_flags & VM_EXEC)
+        {
+            perm |= PTE_X;
+        }
+        if ((ret = mm_map(mm, ph.p_va, ph.p_memsz, vm_flags, NULL)) != 0)
+        {
+            goto bad_cleanup_mmap;
+        }
+
+        // copy TEXT/DATA from file
+        size_t off, size;
+        uintptr_t start = ph.p_va;
+        uintptr_t end = ph.p_va + ph.p_filesz;
+        uintptr_t la = ROUNDDOWN(start, PGSIZE);
+        while (start < end)
+        {
+            if ((page = pgdir_alloc_page(mm->pgdir, la, perm)) == NULL)
+            {
+                ret = -E_NO_MEM;
+                goto bad_cleanup_mmap;
+            }
+            off = start - la;
+            size = PGSIZE - off;
+            la += PGSIZE;
+            if (end < la)
+            {
+                size -= la - end;
+            }
+            if ((ret = load_icode_read(fd, page2kva(page) + off, size, ph.p_offset + (start - ph.p_va))) != 0)
+            {
+                goto bad_cleanup_mmap;
+            }
+            start += size;
+        }
+
+        // build BSS section (zero-fill)
+        end = ph.p_va + ph.p_memsz;
+        if (start < la)
+        {
+            if (start == end)
+            {
+                continue;
+            }
+            off = start + PGSIZE - la;
+            size = PGSIZE - off;
+            if (end < la)
+            {
+                size -= la - end;
+            }
+            memset(page2kva(page) + off, 0, size);
+            start += size;
+            assert((end < la && start == end) || (end >= la && start == la));
+        }
+        while (start < end)
+        {
+            if ((page = pgdir_alloc_page(mm->pgdir, la, perm)) == NULL)
+            {
+                ret = -E_NO_MEM;
+                goto bad_cleanup_mmap;
+            }
+            off = start - la;
+            size = PGSIZE - off;
+            la += PGSIZE;
+            if (end < la)
+            {
+                size -= la - end;
+            }
+            memset(page2kva(page) + off, 0, size);
+            start += size;
+        }
+    }
+
+    // (5) build user stack memory
+    vm_flags = VM_READ | VM_WRITE | VM_STACK;
+    if ((ret = mm_map(mm, USTACKTOP - USTACKSIZE, USTACKSIZE, vm_flags, NULL)) != 0)
+    {
+        goto bad_cleanup_mmap;
+    }
+    // pre-allocate a few pages for initial stack
+    for (i = 1; i <= 4; i++)
+    {
+        if (pgdir_alloc_page(mm->pgdir, USTACKTOP - i * PGSIZE, PTE_USER) == NULL)
+        {
+            ret = -E_NO_MEM;
+            goto bad_cleanup_mmap;
+        }
+    }
+
+    // (6) switch to new address space, setup argc/argv on user stack
+    lsatp(PADDR(mm->pgdir));
+    flush_tlb();
+
+    // reserve some space at the top to avoid clobbering by early function calls in _start
+    uintptr_t ustack = USTACKTOP - 32;
+    uintptr_t uargv_store[EXEC_MAX_ARG_NUM + 1];
+    for (i = argc - 1; i >= 0; i--)
+    {
+        size_t slen = strnlen(kargv[i], EXEC_MAX_ARG_LEN) + 1;
+        ustack -= slen;
+        ustack = ROUNDDOWN(ustack, sizeof(uintptr_t));
+        memcpy((void *)ustack, kargv[i], slen);
+        uargv_store[i] = ustack;
+    }
+    uargv_store[argc] = 0;
+
+    ustack -= (argc + 1) * sizeof(uintptr_t);
+    ustack = ROUNDDOWN(ustack, 16);
+    uintptr_t uargv_addr = ustack;
+    memcpy((void *)uargv_addr, uargv_store, (argc + 1) * sizeof(uintptr_t));
+
+    // (7) set current process's mm, satp, and pgdir
+    mm_count_inc(mm);
+    current->mm = mm;
+    current->pgdir = PADDR(mm->pgdir);
+
+    // (8) setup trapframe for user environment
+    struct trapframe *tf = current->tf;
+    uintptr_t sstatus = tf->status;
+    memset(tf, 0, sizeof(struct trapframe));
+    tf->gpr.sp = USTACKTOP;
+    tf->gpr.a0 = argc;
+    tf->gpr.a1 = uargv_addr;
+    tf->epc = elf.e_entry;
+    tf->status = (sstatus & ~SSTATUS_SPP) | SSTATUS_SPIE;
+
+    (void)sysfile_close(fd);
+    return 0;
+
+bad_cleanup_mmap:
+    // restore to kernel page table before reclaim
+    lsatp(boot_pgdir_pa);
+    flush_tlb();
+    exit_mmap(mm);
+bad_elf_cleanup_pgdir:
+    put_pgdir(mm);
+bad_pgdir_cleanup_mm:
+    mm_destroy(mm);
+bad_mm:
+    (void)sysfile_close(fd);
+    return ret;
+
 }
 
 // this function isn't very correct in LAB8

@@ -615,10 +615,12 @@ sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, off_t offset
         }
         alen += size;
         buf += size;
-        blkno++;
-        if (nblks > 0) {
-            nblks--;
+        // 若本次读写已经到达 endpos（即 nblks==0），不要进入后续块处理
+        if (nblks == 0) {
+            goto out;
         }
+        blkno++;
+        nblks--;
     }
 
     // (2) 处理中间的完整块
