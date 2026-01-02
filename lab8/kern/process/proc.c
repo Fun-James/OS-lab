@@ -127,7 +127,7 @@ alloc_proc(void)
          *       uint32_t lab6_priority;                     // priority value (lab6 stride)
          */
 
-        //LAB8 YOUR CODE : (update LAB6 steps)
+        //LAB8 2313446 : (update LAB6 steps)
         /*
          * below fields(add in LAB6) in proc_struct need to be initialized
          *       struct files_struct * filesp;                file struct point        
@@ -154,7 +154,7 @@ alloc_proc(void)
         proc->lab6_stride = 0;
         proc->lab6_priority = 0;
 
-        
+        proc->filesp = NULL;
     }
     return proc;
 }
@@ -278,7 +278,7 @@ void proc_run(struct proc_struct *proc)
         // 3. 切换页表，以便使用新进程的地址空间
         // lsatp() 函数接受页目录表的物理地址（右移 RISCV_PGSHIFT 位）
         lsatp(next->pgdir);
-            
+        flush_tlb();    
         // 4. 实现上下文切换
         // switch_to() 定义在 switch.S 中
         // 第一个参数：指向当前进程 context 的指针（保存旧进程上下文）
@@ -288,7 +288,7 @@ void proc_run(struct proc_struct *proc)
     // 5. 允许中断（恢复之前的中断状态）
     local_intr_restore(intr_flag);
 
-    //LAB8 YOUR CODE : (update LAB4 steps)
+    //LAB8 2313447 : (update LAB4 steps)
       /*
        * below fields(add in LAB6) in proc_struct need to be initialized
        *       before switch_to();you should flush the tlb
@@ -709,6 +709,31 @@ load_icode_read(int fd, void *buf, size_t len, off_t offset)
 static int
 load_icode(int fd, int argc, char **kargv)
 {
+        /* LAB8:EXERCISE2 2313486  HINT:how to load the file with handler fd  in to process's memory? how to setup argc/argv?
+     * MACROs or Functions:
+     *  mm_create        - create a mm
+     *  setup_pgdir      - setup pgdir in mm
+     *  load_icode_read  - read raw data content of program file
+     *  mm_map           - build new vma
+     *  pgdir_alloc_page - allocate new memory for  TEXT/DATA/BSS/stack parts
+     *  lsatp             - update Page Directory Addr Register -- CR3
+     */
+    //You can Follow the code form LAB5 which you have completed  to complete 
+    /* (1) create a new mm for current process
+     * (2) create a new PDT, and mm->pgdir= kernel virtual addr of PDT
+     * (3) copy TEXT/DATA/BSS parts in binary to memory space of process
+     *    (3.1) read raw data content in file and resolve elfhdr
+     *    (3.2) read raw data content in file and resolve proghdr based on info in elfhdr
+     *    (3.3) call mm_map to build vma related to TEXT/DATA
+     *    (3.4) callpgdir_alloc_page to allocate page for TEXT/DATA, read contents in file
+     *          and copy them into the new allocated pages
+     *    (3.5) callpgdir_alloc_page to allocate pages for BSS, memset zero in these pages
+     * (4) call mm_map to setup user stack, and put parameters into user stack
+     * (5) setup current process's mm, cr3, reset pgidr (using lsatp MARCO)
+     * (6) setup uargc and uargv in user stacks
+     * (7) setup trapframe for user environment
+     * (8) if up steps failed, you should cleanup the env.
+     */
     if (current->mm != NULL)
     {
         panic("load_icode: current->mm must be empty.\n");
